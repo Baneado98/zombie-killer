@@ -1,0 +1,15 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.Baneado98/zombie-killer",
+  "description": "Detect zombie subscriptions from raw bank/statement data and generate ready-to-send cancellation, renegotiation, and GDPR/CCPA data-deletion letters. The user sends them; it never acts on their behalf.",
+  "repository": { "url": "https://github.com/Baneado98/zombie-killer", "source": "github" },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "subkill-mcp",
+      "version": "0.1.0",
+      "transport": { "type": "stdio" }
+    }
+  ]
+}

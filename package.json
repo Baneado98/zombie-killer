@@ -1,0 +1,67 @@
+{
+  "name": "subkill-mcp",
+  "version": "0.1.0",
+  "mcpName": "io.github.Baneado98/zombie-killer",
+  "description": "Detect zombie subscriptions from raw bank/statement data and generate ready-to-send cancellation, renegotiation, and GDPR/CCPA data-deletion letters. The user sends them — it never acts on their behalf. MCP server + pay-per-call x402 API + human crypto checkout. No API key, no bank login.",
+  "type": "module",
+  "bin": {
+    "subkill": "dist/mcp.js"
+  },
+  "main": "dist/mcp.js",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE",
+    "server.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Baneado98/zombie-killer.git"
+  },
+  "homepage": "https://zombie-killer.vercel.app",
+  "bugs": {
+    "url": "https://github.com/Baneado98/zombie-killer/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "start:mcp": "node dist/mcp.js",
+    "start:http": "node dist/server.js",
+    "dev:mcp": "tsx src/mcp.ts",
+    "dev:http": "tsx src/server.ts",
+    "test": "tsx src/engine.test.ts"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "subscription",
+    "zombie-subscription",
+    "cancel-subscription",
+    "recurring-charges",
+    "gdpr",
+    "ccpa",
+    "data-deletion",
+    "personal-finance",
+    "x402",
+    "letter-generator",
+    "ai-agent"
+  ],
+  "author": "Baneado98",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0"
+  },
+  "devDependencies": {
+    "express": "^4.21.2",
+    "x402-express": "^1.2.0",
+    "zod": "^3.24.1",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
