@@ -16,10 +16,64 @@ interface Env {
   X402_PAYTO?: string;
   X402_PRICE?: string;
   PUBLIC_BASE_URL?: string;
-  X402_VERCEL_URL?: string;        // where the x402 /pro surface lives
+  X402_VERCEL_URL?: string;        // where the MCP /mcp surface lives (Vercel)
+  X402_FACILITATOR_URL?: string;   // mainnet settler (Primer for v1)
+  X402_ENABLED?: string;
   NOWPAYMENTS_API_KEY?: string;
   NOWPAYMENTS_BASE?: string;
   INDEX402_HASH?: string;
+}
+
+// ---- native x402 (resource-server side, no Express) -----------------------
+// USDC on Base, 6 decimals. We build the 402 challenge, verify the client's
+// X-PAYMENT against the facilitator, do the work, then settle on-chain.
+const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+
+function x402Accepts(env: Env, resource: string, description: string) {
+  const amount = Number((env.X402_PRICE ?? "$0.50").replace("$", "")) || 0.5;
+  return [{
+    scheme: "exact", network: "base",
+    maxAmountRequired: String(Math.round(amount * 1e6)),
+    resource, description, mimeType: "application/json",
+    payTo: env.X402_PAYTO ?? "0x074cFCfDf4509333a8d8dC0f90D18Ef276481c21",
+    maxTimeoutSeconds: 60, asset: USDC_BASE,
+    outputSchema: { input: { type: "http", method: "GET", discoverable: true } },
+    extra: { name: "USD Coin", version: "2" },
+  }];
+}
+
+function challenge402(env: Env, resource: string, description: string, err = "X-PAYMENT header is required") {
+  return J({ x402Version: 1, error: err, accepts: x402Accepts(env, resource, description) }, 402);
+}
+
+async function facilitator(env: Env, kind: "verify" | "settle", payload: any, requirements: any) {
+  const url = env.X402_FACILITATOR_URL ?? "https://x402.primer.systems";
+  const r = await fetch(`${url}/${kind}`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ x402Version: 1, paymentPayload: payload, paymentRequirements: requirements }),
+  });
+  return { status: r.status, body: await r.json().catch(() => ({})) as any };
+}
+
+/** Returns null if paid+valid (caller proceeds, then call settle), else a 402 Response. */
+async function requirePayment(env: Env, req: Request, resource: string, description: string):
+  Promise<{ paid: true; payload: any; requirements: any } | { paid: false; res: Response }> {
+  if (env.X402_ENABLED === "false") return { paid: true, payload: null, requirements: null };
+  const header = req.headers.get("x-payment") || req.headers.get("X-PAYMENT");
+  const requirements = x402Accepts(env, resource, description)[0];
+  if (!header) return { paid: false, res: challenge402(env, resource, description) };
+  let payload: any;
+  try { payload = JSON.parse(atob(header)); }
+  catch { return { paid: false, res: challenge402(env, resource, description, "Malformed X-PAYMENT header (expected base64 JSON).") }; }
+  try {
+    const v = await facilitator(env, "verify", payload, requirements);
+    if (v.status !== 200 || !v.body?.isValid) {
+      return { paid: false, res: challenge402(env, resource, description, `Payment verification failed: ${v.body?.invalidReason ?? v.status}`) };
+    }
+    return { paid: true, payload, requirements };
+  } catch (e: any) {
+    return { paid: false, res: challenge402(env, resource, description, "Facilitator unavailable.") };
+  }
 }
 
 const J = (o: unknown, status = 200) =>
@@ -91,8 +145,8 @@ export default {
       return J({
         openapi: "3.1.0",
         info: { title: "zombie-killer", version: "0.1.0", description: "Detect zombie subscriptions and draft cancel/renegotiate/GDPR-CCPA letters. Pay-per-call via x402 (USDC on Base).", contact: { email: "saraelkabir97@gmail.com" } },
-        servers: [{ url: XURL }],
-        paths: { "/pro/package": { get: { summary: "Full letter package (pay-per-call).", operationId: "proPackage", "x-payment-info": payInfo, responses: { "200": { description: "OK" }, "402": { description: "Payment required" } } } } },
+        servers: [{ url: BASE }],
+        paths: { "/pro/package": { get: { summary: "Full letter package (pay-per-call).", operationId: "proPackage", "x-payment-info": payInfo, parameters: [{ name: "data", in: "query", required: true, schema: { type: "string" }, description: "Raw transaction text (CSV or free-form lines)." }, { name: "jurisdiction", in: "query", required: false, schema: { type: "string" }, description: "us|eu|uk|ca" }], responses: { "200": { description: "OK" }, "402": { description: "Payment required" } } } } },
       });
     }
     if (path === "/.well-known/x402" || path === "/.well-known/x402-listing") {
@@ -101,7 +155,7 @@ export default {
         description: "Detect zombie subscriptions and draft cancel/renegotiate/GDPR-CCPA data-deletion letters. The human sends them.",
         category: "personal-finance", repository: "https://github.com/Baneado98/zombie-killer",
         mcp: { npx: "subkill-mcp", http: `${XURL}/mcp` },
-        accepts: [{ method: "GET", path: "/pro/package", resource: `${XURL}/pro/package?data=2026-05-12,NETFLIX.COM,-12.99`, price: { amount: PRICE.replace("$", ""), currency: "USD", asset: "USDC", network: "base" }, payTo: PAYTO, scheme: "exact", description: "Full cancel/renegotiate/data-deletion letter package." }],
+        accepts: [{ method: "GET", path: "/pro/package", resource: `${BASE}/pro/package?data=2026-05-12,NETFLIX.COM,-12.99`, price: { amount: PRICE.replace("$", ""), currency: "USD", asset: "USDC", network: "base" }, payTo: PAYTO, scheme: "exact", description: "Full cancel/renegotiate/data-deletion letter package." }],
       });
     }
 
@@ -152,6 +206,36 @@ export default {
     }
     if (path === "/api/pay/status") {
       try { return J(await npStatus(env, url.searchParams.get("id") ?? "")); } catch (e: any) { return J({ error: String(e?.message ?? e) }, 400); }
+    }
+
+    // ---- x402 PAID: /pro/package (agents) ----------------------------------
+    if (path === "/pro/package") {
+      const data = url.searchParams.get("data") ?? "";
+      const resource = `${BASE}/pro/package`;
+      const desc = "zombie-killer: full cancel/renegotiate/data-deletion letter package.";
+      const gate = await requirePayment(env, req, resource, desc);
+      if (!gate.paid) return gate.res;
+      if (!data.trim()) return J({ error: "Query param 'data' is required." }, 400);
+      let out: unknown;
+      try {
+        out = buildPackage(data, url.searchParams.get("onlyZombies") === "true", undefined, {
+          fullName: url.searchParams.get("fullName") ?? undefined,
+          email: url.searchParams.get("email") ?? undefined,
+          accountId: url.searchParams.get("accountId") ?? undefined,
+          jurisdiction: (url.searchParams.get("jurisdiction") as Jurisdiction | null) ?? undefined,
+        });
+      } catch (e: any) { return J({ error: String(e?.message ?? e) }, 400); }
+      // settle on-chain (best-effort); attach the settlement header like x402-express.
+      let settleHdr = "";
+      try {
+        if (gate.payload) {
+          const s = await facilitator(env, "settle", gate.payload, gate.requirements);
+          if (s.body) settleHdr = btoa(JSON.stringify(s.body));
+        }
+      } catch { /* payment verified; settlement broadcast may lag — still deliver */ }
+      const resp = J(out);
+      if (settleHdr) resp.headers.set("X-PAYMENT-RESPONSE", settleHdr);
+      return resp;
     }
 
     return J({ error: "Not found. See GET / for the app." }, 404);
