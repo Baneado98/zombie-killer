@@ -43,7 +43,14 @@ function x402Accepts(env: Env, resource: string, description: string) {
 }
 
 function challenge402(env: Env, resource: string, description: string, err = "X-PAYMENT header is required") {
-  return J({ x402Version: 1, error: err, accepts: x402Accepts(env, resource, description) }, 402);
+  const accepts = x402Accepts(env, resource, description);
+  const r = J({ x402Version: 1, error: err, accepts }, 402);
+  // Also advertise the challenge via headers so x402 crawlers/probes that look
+  // for a header (not just the JSON body) detect it.
+  r.headers.set("PAYMENT-REQUIRED", JSON.stringify({ x402Version: 1, accepts }));
+  r.headers.set("WWW-Authenticate", `x402 network="base", asset="USDC", maxAmountRequired="${accepts[0].maxAmountRequired}", payTo="${accepts[0].payTo}", resource="${resource}"`);
+  r.headers.set("Access-Control-Expose-Headers", "PAYMENT-REQUIRED, WWW-Authenticate, X-PAYMENT-RESPONSE");
+  return r;
 }
 
 async function facilitator(env: Env, kind: "verify" | "settle", payload: any, requirements: any) {
@@ -135,6 +142,39 @@ export default {
       return new Response(LANDING_HTML(BASE, PRICE), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
     }
     if (path === "/health") return J({ ok: true });
+
+    // ---- MCP-over-HTTP (free, minimal JSON-RPC; no Node http needed) --------
+    if (path === "/mcp") {
+      if (req.method !== "POST") return J({ error: "Use POST for MCP." }, 405);
+      const rpc: any = await req.json().catch(() => ({}));
+      const id = rpc?.id ?? null;
+      const ok = (result: unknown) => J({ jsonrpc: "2.0", id, result });
+      const tools = [
+        { name: "scan_subscriptions", description: "Detect recurring subscriptions and 'zombie' (forgotten/wasteful) charges from raw bank or subscription data. Returns each charge with a ZOMBIE/REVIEW/ACTIVE verdict, cadence, annualized cost and estimated yearly savings.", inputSchema: { type: "object", properties: { data: { type: "string", description: "Raw transaction text (CSV or free-form lines)." } }, required: ["data"] } },
+        { name: "generate_letter", description: "Draft a cancel / renegotiate / data-deletion (GDPR/CCPA) letter for one recurring charge. You send it yourself.", inputSchema: { type: "object", properties: { type: { type: "string", enum: ["cancel", "renegotiate", "data_deletion"] }, merchant: { type: "string" }, amount: { type: "number" }, currency: { type: "string" }, cadence: { type: "string" }, fullName: { type: "string" }, email: { type: "string" }, accountId: { type: "string" }, jurisdiction: { type: "string" }, cancelHint: { type: "string" }, privacyContact: { type: "string" } }, required: ["type", "merchant"] } },
+        { name: "build_letter_package", description: "Scan raw data and draft the full action package (cancel + renegotiate + data-deletion) for every zombie/review charge.", inputSchema: { type: "object", properties: { data: { type: "string" }, onlyZombies: { type: "boolean" }, fullName: { type: "string" }, email: { type: "string" }, accountId: { type: "string" }, jurisdiction: { type: "string" } }, required: ["data"] } },
+      ];
+      const method = rpc?.method;
+      if (method === "initialize")
+        return ok({ protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "zombie-killer", version: "0.1.0" } });
+      if (method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (method === "tools/list") return ok({ tools });
+      if (method === "tools/call") {
+        const n = rpc?.params?.name; const a = rpc?.params?.arguments ?? {};
+        try {
+          if (n === "scan_subscriptions")
+            return ok({ content: [{ type: "text", text: JSON.stringify(scan(String(a.data ?? "")), null, 2) }] });
+          if (n === "generate_letter") {
+            const charge: RecurringCharge = { merchant: String(a.merchant ?? "this service"), category: "Recurring charge", knownSubscription: true, hardToCancel: false, cadence: a.cadence ?? "monthly", occurrences: 1, amountTypical: Number(a.amount ?? 0), currency: String(a.currency ?? "USD"), firstSeen: "", lastSeen: "", daysSinceLast: 0, annualizedCost: 0, zombieScore: 0, zombieReasons: [], verdict: "REVIEW", cancelHint: a.cancelHint, privacyContact: a.privacyContact, descriptorExample: String(a.merchant ?? "") };
+            return ok({ content: [{ type: "text", text: JSON.stringify(generateLetter(a.type as LetterType, charge, userCtxFrom(a)), null, 2) }] });
+          }
+          if (n === "build_letter_package")
+            return ok({ content: [{ type: "text", text: JSON.stringify(buildPackage(String(a.data ?? ""), !!a.onlyZombies, undefined, userCtxFrom(a)), null, 2) }] });
+          return J({ jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown tool: ${n}` } });
+        } catch (e: any) { return J({ jsonrpc: "2.0", id, error: { code: -32603, message: String(e?.message ?? e) } }); }
+      }
+      return J({ jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown method: ${method}` } });
+    }
     if (path === "/.well-known/402index-verify.txt")
       return new Response(env.INDEX402_HASH ?? "pending", { headers: { "content-type": "text/plain" } });
 
@@ -154,7 +194,7 @@ export default {
         x402Version: 1, name: "zombie-killer",
         description: "Detect zombie subscriptions and draft cancel/renegotiate/GDPR-CCPA data-deletion letters. The human sends them.",
         category: "personal-finance", repository: "https://github.com/Baneado98/zombie-killer",
-        mcp: { npx: "subkill-mcp", http: `${XURL}/mcp` },
+        mcp: { npx: "subkill-mcp", http: `${BASE}/mcp` },
         accepts: [{ method: "GET", path: "/pro/package", resource: `${BASE}/pro/package?data=2026-05-12,NETFLIX.COM,-12.99`, price: { amount: PRICE.replace("$", ""), currency: "USD", asset: "USDC", network: "base" }, payTo: PAYTO, scheme: "exact", description: "Full cancel/renegotiate/data-deletion letter package." }],
       });
     }

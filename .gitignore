@@ -6,3 +6,4 @@ dist
 .npmrc
 
 .vercel
+_publish_retry.sh
