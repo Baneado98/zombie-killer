@@ -1,0 +1,9 @@
+name = "zombie-killer"
+main = "src/worker.ts"
+compatibility_date = "2024-11-01"
+
+[vars]
+X402_PRICE = "$0.50"
+X402_PAYTO = "0x074cFCfDf4509333a8d8dC0f90D18Ef276481c21"
+PUBLIC_BASE_URL = "https://zombie-killer.djrorrok.workers.dev"
+X402_VERCEL_URL = "https://zombie-killer.vercel.app"

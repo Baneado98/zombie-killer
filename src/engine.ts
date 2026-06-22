@@ -297,13 +297,17 @@ export function detectRecurring(txns: Txn[], opts?: { today?: Date }): ScanResul
     const reasons: string[] = [];
     let score = 0;
 
-    // 1. Stale: charged recently but the cadence window has clearly lapsed = still paying.
-    //    Conversely, a known sub still being charged with NO sign of use is the classic zombie.
-    if (cadence === "monthly" && daysSinceLast <= 35) {
-      // it's live; zombie risk comes from "set and forgotten", price creep, hard-to-cancel
-      score += 25; reasons.push("Active recurring charge that's easy to forget");
-    }
-    if (cadence === "yearly") { score += 30; reasons.push("Annual charge — easy to forget you ever signed up"); }
+    // 1. "Set and forget" base risk: a recurring subscription is, by nature, a
+    //    standing charge people stop noticing. This is recency-independent — a
+    //    pasted statement is usually a few months old, so we must NOT require a
+    //    recent charge to flag a live subscription.
+    if (cadence === "monthly") { score += 25; reasons.push("Recurring monthly charge that's easy to set and forget"); }
+    else if (cadence === "yearly") { score += 35; reasons.push("Annual charge — easy to forget you ever signed up"); }
+    else if (cadence === "quarterly" || cadence === "weekly") { score += 20; reasons.push(`Recurring ${cadence} charge`); }
+
+    // 1b. Money at stake: the bigger the bill, the more worth killing.
+    if (typ >= 30) { score += 15; reasons.push("Substantial amount — real money at stake"); }
+    else if (typ >= 15) { score += 8; }
 
     // 2. Price creep: charges trending up across occurrences. A >3% rise (or any
     //    rise of at least 0.50 in the currency unit) is a silent increase worth flagging.
